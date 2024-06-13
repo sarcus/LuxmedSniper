@@ -15,18 +15,17 @@ import coloredlogs
 import requests
 import schedule
 
-coloredlogs.install(level="INFO")
+coloredlogs.install(level="DEBUG")
 log = logging.getLogger("main")
 
-APP_VERSION = "4.29.0"
+APP_VERSION = "4.31.0"
 CUSTOM_USER_AGENT = f"Patient Portal; {APP_VERSION}; {str(uuid.uuid4())}; Android; {str(random.randint(23, 29))}; {str(uuid.uuid4())}"
 
 
 class LuxMedSniper:
-    LUXMED_TOKEN_URL = 'https://portalpacjenta.luxmed.pl/PatientPortalMobileAPI/api/token'
-    LUXMED_LOGIN_URL = 'https://portalpacjenta.luxmed.pl/PatientPortal/Account/LogInToApp'
+    LUXMED_TOKEN_URL = 'https://portalpacjenta.luxmed.pl/PatientPortal/Account/LogIn'
     NEW_PORTAL_RESERVATION_URL = 'https://portalpacjenta.luxmed.pl/PatientPortal/NewPortal/terms/index'
-    PHONE_VISITS_URL = 'https://portalpacjenta.luxmed.pl/PatientPortal/NewPortal/terms/index'
+    PHONE_VISITS_URL = 'https://portalpacjenta.luxmed.pl/PatientPortal/NewPortal/terms/oneDayTerms'
 
     def __init__(self, configuration_file="luxmedSniper.yaml"):
         self.log = logging.getLogger("LuxMedSniper")
@@ -35,28 +34,21 @@ class LuxMedSniper:
         self._setup_providers()
         self._createSession()
         self._get_access_token()
-        self._logIn()
 
     def _get_access_token(self) -> str:
 
         authentication_body = {
-            'username': self.config['luxmed']['email'],
+            'login': self.config['luxmed']['email'],
             'password': self.config['luxmed']['password'],
-            "grant_type": "password",
-            "account_id": str(uuid.uuid4())[:35],
-            "client_id": str(uuid.uuid4())
         }
 
         response = self.session.post(LuxMedSniper.LUXMED_TOKEN_URL,
                                      data=authentication_body)
         content = response.json()
-        self.access_token = content['access_token']
-        self.refresh_token = content['refresh_token']
-        self.token_type = content['token_type']
-        self.session.headers.update({'Authorization': self.access_token})
+        self.session.headers.update({'Authorization': 'Bearer ' + content['Token']})
         self.log.info('Successfully received an access token!')
 
-        return response.json()["access_token"]
+        return content['Token']
 
     def _createSession(self):
         self.session = requests.Session()
@@ -80,21 +72,6 @@ class LuxMedSniper:
             self.config = yaml.load(config_data, Loader=yaml.FullLoader)
         except Exception as yaml_error:
             raise Exception('Configuration problem: {error}'.format(error=yaml_error))
-
-    def _logIn(self):
-
-        params = {
-            "app": "search",
-            "client": 3,
-            "paymentSupported": "true",
-            "lang": "pl"
-        }
-        response = self.session.get(LuxMedSniper.LUXMED_LOGIN_URL, params=params)
-
-        if response.status_code != 200:
-            raise LuxmedSniperException("Unexpected response code, cannot log in")
-
-        self.log.info('Successfully logged in!')
 
     def _parseVisitsNewPortal(self, data) -> List[dict]:
         appointments = []
