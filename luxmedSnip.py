@@ -9,6 +9,7 @@ import uuid
 import yaml
 
 from typing import List
+from dateutil.parser import parse
 
 import coloredlogs
 import requests
@@ -25,6 +26,7 @@ class LuxMedSniper:
     LUXMED_TOKEN_URL = 'https://portalpacjenta.luxmed.pl/PatientPortalMobileAPI/api/token'
     LUXMED_LOGIN_URL = 'https://portalpacjenta.luxmed.pl/PatientPortal/Account/LogInToApp'
     NEW_PORTAL_RESERVATION_URL = 'https://portalpacjenta.luxmed.pl/PatientPortal/NewPortal/terms/index'
+    PHONE_VISITS_URL = 'https://portalpacjenta.luxmed.pl/PatientPortal/NewPortal/terms/index'
 
     def __init__(self, configuration_file="luxmedSniper.yaml"):
         self.log = logging.getLogger("LuxMedSniper")
@@ -96,8 +98,8 @@ class LuxMedSniper:
 
     def _parseVisitsNewPortal(self, data) -> List[dict]:
         appointments = []
-        (clinicIds, doctorIds) = self.config['luxmedsniper'][
-            'doctor_locator_id'].strip().split('*')[-2:]
+        (serviceId, clinicIds, doctorIds) = self.config['luxmedsniper'][
+            'doctor_locator_id'].strip().split('*')[-3:]
         content = data.json()
         for termForDay in content["termsForService"]["termsForDays"]:
             for term in termForDay["terms"]:
@@ -117,7 +119,68 @@ class LuxMedSniper:
                         'ServiceId': term['serviceId']
                     }
                 )
+        if len(appointments) == 0 and int(serviceId) >= 13700:
+            for termInfoForDay in content["termsForService"]["termsInfoForDays"]:
+                day = termInfoForDay['day']
+                number_of_visits = termInfoForDay['termsCounter']['termsNumber']
+                if number_of_visits > 0:
+                    data = self._getPhoneVisits(day)
+                    time.sleep(random.uniform(1,2))
+                    for term in data["termsForDay"]["terms"]:
+                        doctor = term['doctor']
+
+                        if doctorIds != '-1' and str(doctor['id']) != doctorIds:
+                            continue
+                        if clinicIds != '-1' and str(term['clinicId']) != clinicIds:
+                            continue
+
+                        appointments.append(
+                            {
+                                'AppointmentDate': term['dateTimeFrom'],
+                                'ClinicId': term['clinicId'],
+                                'ClinicPublicName': term['clinic'],
+                                'DoctorName': f'{doctor["id"]}',
+                                'ServiceId': term['serviceId']
+                            }
+                        )
+                    # appointments.append(
+                    #     {
+                    #         'AppointmentDate': day,
+                    #         'ClinicId': '?',
+                    #         'ClinicPublicName': '?',
+                    #         'DoctorName': f'There is {number_of_visits} visits',
+                    #         'ServiceId': '?'
+                    #     }
+                    # )
         return appointments
+
+    def _getPhoneVisits(self, day):
+        try:
+            (cityId, serviceId, clinicIds, doctorIds) = self.config['luxmedsniper'][
+                'doctor_locator_id'].strip().split('*')
+        except ValueError:
+            raise Exception('DoctorLocatorID seems to be in invalid format')
+
+        params = {
+            "searchPlace.id": cityId,
+            "searchPlace.type": 0,
+            "serviceVariantId": serviceId,
+            "languageId": 10,
+            "searchDateFrom": day,
+            "searchDateTo": day,
+            "nextSearch": False,
+            "searchByMedicalSpecialist": False,
+            "serviceVariantSource": 2,
+            "locationReplaced": False,
+            "delocalized": False
+        }
+        if clinicIds != '-1':
+            params['facilitiesIds'] = clinicIds.split(',')
+        if doctorIds != '-1':
+            params['doctorsIds'] = doctorIds.split(',')
+
+        response = self.session.get(LuxMedSniper.PHONE_VISITS_URL, params=params)
+        return response.json()
 
     def _getAppointmentsNewPortal(self):
         try:
@@ -125,15 +188,34 @@ class LuxMedSniper:
                 'doctor_locator_id'].strip().split('*')
         except ValueError:
             raise Exception('DoctorLocatorID seems to be in invalid format')
-        date_to = (datetime.date.today() + datetime.timedelta(
-            days=self.config['luxmedsniper']['lookup_time_days']))
+
+        if 'date_from' in self.config['luxmedsniper']:
+            date_from = self.config['luxmedsniper']['date_from']
+            date_from = parse(date_from).date()
+        else:
+            date_from = datetime.date.today()
+
+        date_from += datetime.timedelta(
+            days=self.config['luxmedsniper'].get('skip_days', 0))
+
+        if 'date_to' in self.config['luxmedsniper']:
+            date_to = self.config['luxmedsniper']['date_to']
+            date_to = parse(date_to).date()
+        else:
+            date_to = (date_from + datetime.timedelta(
+                days=self.config['luxmedsniper']['lookup_time_days']))
+
         params = {
             "searchPlace.id": cityId,
             "searchPlace.type": 0,
             "serviceVariantId": serviceId,
             "languageId": 10,
-            "searchDateFrom": datetime.date.today().strftime("%Y-%m-%d"),
+            "searchDateFrom": date_from.strftime("%Y-%m-%d"),
             "searchDateTo": date_to.strftime("%Y-%m-%d"),
+            "nextSearch": False,
+            "searchByMedicalSpecialist": False,
+            "serviceVariantSource": 2,
+            "locationReplaced": False,
             "delocalized": False
         }
         if clinicIds != '-1':
@@ -143,7 +225,7 @@ class LuxMedSniper:
 
         response = self.session.get(LuxMedSniper.NEW_PORTAL_RESERVATION_URL, params=params)
         return [*filter(
-            lambda a: datetime.datetime.fromisoformat(a['AppointmentDate']).date() <= date_to,
+            lambda a: (datetime.datetime.fromisoformat(a['AppointmentDate']).date() <= date_to) and (datetime.datetime.fromisoformat(a['AppointmentDate']).date() >= date_from),
             self._parseVisitsNewPortal(response))]
 
     def check(self):
@@ -265,11 +347,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-d", "--delay",
-        type=int, help="Delay in fetching updates [s]", default=1800
+        type=int, help="Delay in fetching updates [s]", default=60
     )
     args = parser.parse_args()
     work(args.config)
-    schedule.every(args.delay).seconds.do(work, args.config)
+    schedule.every(args.delay).to(args.delay*4).seconds.do(work, args.config)
     while True:
         schedule.run_pending()
         time.sleep(1)
