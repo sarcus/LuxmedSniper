@@ -15,12 +15,11 @@ import coloredlogs
 import requests
 import schedule
 
-coloredlogs.install(level="DEBUG")
+coloredlogs.install(level="INFO")
 log = logging.getLogger("main")
 
 APP_VERSION = "4.31.0"
 CUSTOM_USER_AGENT = f"Patient Portal; {APP_VERSION}; {str(uuid.uuid4())}; Android; {str(random.randint(23, 29))}; {str(uuid.uuid4())}"
-
 
 class LuxMedSniper:
     LUXMED_TOKEN_URL = 'https://portalpacjenta.luxmed.pl/PatientPortal/Account/LogIn'
